@@ -1,0 +1,584 @@
+---
+title: Analiza estymatorów w regresji liniowej w kontekście selekcji zmiennych i redukcji błędu estymacji
+author: "Sylwia Patrijas"
+date: "2025-03-31"
+output: pdf_document
+---
+
+```{r, echo = FALSE}
+set.seed(111)
+```
+
+Raport ten skupia się na analizie i porównaniu różnych metod **estymacji wektora współczynników regresji liniowej $\beta$** oraz procedur selekcji zmiennych pod kątem ich efektywności. Rozważanych będzie następujących sześć estymatorów: **estymator najmniejszych kwadratów**, **estymator Jamesa-Steina ściągający do zera**, **estymator Jamesa-Steina ściągający do wspólnej średniej** oraz **trzy estymatory "ucięte"**: dla procedury Bonferroniego, procedury Benjaminiego-Hochberga i klasyfikatora Bayesowskiego przy założeniu tej samej funkcji straty za błąd pierwszego i drugiego rodzaju.
+
+
+
+Jako pierwsze, należy wygenerować **ortonormalną macierz planu** $X_{1000x1000}$, to znaczy taką, że $X^T X = I$. Zrobię to, korzystając z polecenia *randortho*, a następnie sprawdzę poprawność wygenerowanej macierzy, wyliczając $X^T X$.
+
+
+```{r 1, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(pracma)
+
+set.seed(111)
+X <- randortho(1000, type = "orthonormal")
+I <- t(X) %*% X
+
+# roznice elementow na przekatnej a 1:
+
+diag_diff <- abs(diag(I) - 1)
+max_diff <- format(max(diag_diff), scientific = FALSE)
+
+
+# roznice elementow poza przekatna a 0:
+
+macierz <- matrix(0, 1000, 1000)
+diag(macierz) <- diag(I)
+roznica <- I - macierz
+max_diff_2 <- format(max(abs(roznica)), scientific = FALSE)
+
+```
+
+Maksymalna różnica między elementami na przekątnej iloczynu macierzy $X^T X$ a liczbą $1$ to wartość **bardzo bliska zera**. Podobnie, maksymalna różnica między elementami poza przekątną tego iloczynu a liczbą $0$ jest **bardzo zbliżona do zera**. Zatem, potwierdza to **poprawność wygenerowania macierzy ortonormalnej**, gdyż niewielkie różnice pojawiają się z powodu błędów numerycznych.
+
+
+# POJEDYNCZE DOŚWIADCZENIE
+
+
+W pierwszej części tego raportu należy wygenerować **wektor współczynników regresji** jako ciąg niezależnych zmiennych losowych z rozkładu: $$\beta_i \sim (1 - \gamma) \delta_0 + \gamma \phi(0, \tau^2),$$ gdzie $\delta_0$ jest rozkładem skupionym w $0$, a $\phi(0, \tau^2)$ jest gęstością rozkładu normalnego $N(0, \tau^2)$. Należy rozważyć sześć przypadków: 
+
+* $\gamma = 0.01, \tau = 1.5\sqrt{2\log1000}$,
+* $\gamma = 0.05, \tau = 1.5\sqrt{2\log1000}$,
+* $\gamma = 0.1, \tau = 1.5\sqrt{2\log1000}$,
+* $\gamma = 0.01, \tau = 3\sqrt{2\log1000}$,
+* $\gamma = 0.05, \tau = 3\sqrt{2\log1000}$,
+* $\gamma = 0.1, \tau = 3\sqrt{2\log1000}$.
+
+Ponadto, dla każdego z tych przypadków należy wygenerować wektor odpowiedzi $Y = X \beta + \epsilon$, gdzie $\epsilon \sim N(0, I_{1000x1000})$ - zakładamy więc, że wariancja błędu jest znana ($\sigma^2 = 1$).
+
+
+Zatem, zgodnie z zadaniem, dla każdej kombinacji wartości $\gamma$ i $\tau$ wygeneruję wektor współczynników regresji $\beta$ zgodnie z podanym rozkładem: z prawdopodobieństwem $\gamma$ $\beta_i$ pochodzi z rozkładu normalnego $N(0, \tau^2)$, a z prawdopodobieństwem $1 - \gamma$ jest to $0$. Następnie, w każdej z tych sytuacji wygeneruję także wektor odpowiedzi $Y$ zgodnie ze wzorem $Y = X \beta + \epsilon$. W rezultacie, rozważam sześć sytuacji (dla różnych kombinacji $\gamma$ i $\tau$) oraz wygenerowane dla nich wektory $\beta$ i $Y$. Jednak, przy stosowaniu różnych procedur w dalszej części raportu, nie wykorzystujemy owych informacji z procesu generującego dane.
+
+
+
+```{r 2, echo = FALSE}
+
+set.seed(111)
+n <- 1000 
+gamma_values <- c(0.01, 0.05, 0.1)
+tau_values <- c(1.5 * sqrt(2 * log(1000)), 3 * sqrt(2 * log(1000)))
+combinations <- expand.grid(gamma = gamma_values, tau = tau_values)
+
+generate_data <- function(gamma, tau) {
+  bernoulli_sample <- rbinom(n, size = 1, prob = gamma)    # 1 z prawd gamma, 0 z prawd 1 - gamma
+  # wiec: gdy 1, to rozklad normalny, a gdy 0, to 0, zatem:
+  beta <- bernoulli_sample * rnorm(n, mean = 0, sd = tau)
+  
+  Y <- X %*% beta + rnorm(1000, 0, 1)
+  return(list(Y = Y, beta = beta, gamma = gamma, tau = tau))
+}
+
+
+modele <- mapply(function(gamma, tau) generate_data(gamma, tau), 
+                 combinations$gamma, combinations$tau, 
+                 SIMPLIFY = FALSE)
+
+```
+
+
+
+## ESTYMATOR NAJMNIEJSZYCH KWADRATÓW
+
+Jako pierwszy rozważymy w tej sytuacji **estymator najmniejszych kwadratów** $\hat{\beta}^{LS}$ dla wektora $\beta$. Wiemy, iż wyraża się on następującym wzorem: $$\hat{\beta}^{LS} = (X'X)^{-1} X' Y.$$ Jeśli przyjmiemy (jak podano w treści zadania), że $X'X = I$, to otrzymujemy: $\hat{\beta}^{LS} = X' Y$. Z kolei rozkład tego estymatora wygląda następująco: $$\hat{\beta}^{LS} \sim N(\beta, \sigma^2 (X'X)^{-1}).$$ Przyjmując znów z treści zadania, że $X'X = I$, a $\sigma^2 = 1$, dostajemy: $\hat{\beta}^{LS} \sim N(\beta, I)$. Wiemy również, że owy estymator najmniejszych kwadratów $\hat{\beta}^{LS}$ jest w tej sytuacji równy estymatorowi największej wiarogodności $\hat{\beta}_{MLE}$.
+
+
+Znając już te fakty, napiszę funkcję, która dla podanych macierzy $X$ i wektora $Y$ zwraca wyliczony zgodnie z podanym wzorem **estymator najmniejszych kwadratów** dla wektora $\beta$.
+
+
+```{r 3, echo = FALSE}
+
+beta_mle <- function(X,Y){
+  XT_X <- t(X) %*% X
+  beta_hat <- solve(XT_X) %*% t(X) %*% Y
+  return(as.vector(beta_hat))
+}
+
+```
+
+
+
+## ESTYMATOR JAMESA-STEINA ŚCIĄGAJĄCY DO ZERA
+
+
+**Estymator Jamesa-Steina ściągający do zera** dla wektora $\beta$ to estymator postaci: $\hat{\beta}^c = c \hat{\beta}_{MLE}$. Owa wartość $c$ jest znajdowana w taki sposób, aby zminimalizować błąd średniokwadratowy estymatora $\hat{\beta}^c$, w rezultacie czego dostajemy: $c_{opt} = argmin MSE(\hat{\beta}^c) = \frac{||\beta||^2}{||\beta||^2 + \sigma^2n}$. Jednak taki estymator nie może być wykorzystany w praktyce, gdyż wartość $\beta$ nie jest znana. W związku z tym, zauważamy, że: $E||\hat{\beta}||^2 = \sum_{i=1}^nE(\hat{\beta}_i) = \sum_{i=1}^n Var(\hat{\beta}_i) + [E(\hat{\beta}_i)]^2 = \sum_{i=1}^n \sigma^2 + \beta_i^2 = n\sigma^2 + ||\beta||^2$. Wynika z tego, iż $c_{opt} = 1 - \frac{n \sigma^2}{E||\hat{\beta}||^2}$. Zastępując $E||\hat{\beta}||^2$ przez $||\hat{\beta}||^2$ oraz zauważając, że $\frac{\sigma^2}{||\hat{\beta}||^2} \sim Inv \chi^2(n)$, więc $E\frac{\sigma^2}{||\hat{\beta}||^2} = \frac{1}{n-2}$, dostajemy: $$\hat{\beta}_{JS} = c_{JS} \hat{\beta}_{MLE}, c_{JS} = 1 - \frac{(n-2) \sigma^2}{||\hat{\beta}_{MLE}||^2},$$ pamiętając, iż tutaj $\sigma^2 = 1$. Znając już owy wzór, napiszę funkcję, która dla podanego wektora $\hat{\beta}_{MLE}$ wyznacza omawiany **estymator Jamesa-Steina ściągający do zera**.
+
+
+
+```{r 4, echo = FALSE}
+
+JS_do_zera <- function(beta_mle, n=1000, sigma2=1){
+  c_JS <- 1 - (n - 2) * sigma2 / (sum(beta_mle^2))
+  return(c_JS * beta_mle)
+}
+
+```
+
+
+
+## ESTYMATOR JAMESA-STEINA ŚCIĄGAJĄCY DO WSPÓLNEJ ŚREDNIEJ
+
+
+**Estymator Jamesa-Steina ściągający do wspólnej średniej** dla wektora $\beta$ to estymator postaci: $\hat{\beta}^d = (1 - d) \hat{\beta}_{MLE} + d \bar{\hat{\beta}}_{MLE}$. Owa wartość $d$ jest znajdowana w taki sposób, aby zminimalizować błąd średniokwadratowy estymatora $\hat{\beta}^d$, w rezultacie czego dostajemy: $d_{opt} = argmin MSE(\hat{\beta}^d) = \frac{\sigma^2}{var(\beta) + \sigma^2}$. Jednak taki estymator nie może być wykorzystany w praktyce, gdyż wartość $\beta$ nie jest znana. Postępując podobnie jak w przypadku poprzedniego estymatora, dostajemy następujący wynik: $$\hat{\beta}_{JS} = (1 - d_{JS}) \hat{\beta}_{MLE} + d_{JS} \bar{\hat{\beta}}_{MLE}, d_{JS} = \frac{(n-3)}{(n-1)} \frac{\sigma^2}{var(\hat{\beta}_{MLE})},$$ pamiętając, iż tutaj $\sigma^2 = 1$. Znając już owy wzór, napiszę funkcję, która dla podanego wektora $\hat{\beta}_{MLE}$ wyznacza omawiany **estymator Jamesa-Steina ściągający do wspólnej średniej**.
+
+
+```{r 5, echo = FALSE}
+
+JS_do_sredniej <- function(beta_mle, n=1000, sigma2=1){
+  d_JS <- (n - 3) / (n - 1) * sigma2 / var(beta_mle)
+  return((1 - d_JS) * beta_mle + d_JS * mean(beta_mle))
+}
+
+```
+
+
+
+## USTALENIE ISTOTNYCH ZMIENNYCH
+
+
+W tej części raportu należy **ustalić, które zmienne są istotne**, stosując następujące procedury:
+
+* procedura Bonferroniego,
+* procedura Benjaminiego-Hochberga,
+* klasyfikator Bayesowski przy założeniu tej samej funkcji straty za błąd pierwszego i drugiego rodzaju.
+
+
+
+**Procedura Bonferroniego:**
+
+
+**Procedura Bonferroniego** polega na tym, iż odrzucamy hipotezę $H_i$, gdy $p_i \leq \frac{\alpha}{n}$, gdzie $p_i$ jest p-wartością dla $H_i$, a $n$ to liczba hipotez. Zakładamy, iż $\alpha = 0.05$. Napiszę zatem funkcję, która dla podanych p-wartości zwraca informację o tym, które zmienne są istotne na podstawie rozważanej procedury. 
+
+
+
+**P-wartości** natomiast potrzebne do zastosowania tej funkcji wyznacza się, rozważając test istotności współczynnika $\beta_i$ o hipotezach: $H_0: \beta_i = 0, H_1: \beta_i \neq 0$. W takiej sytuacji statystyka testowa wygląda następująco: $T_i = \frac{\hat{\beta_i}}{s(\hat{\beta_i})}$ i przy prawdziwości hipotezy zerowej ma ona rozkład Studenta z $n-p$ stopniami swobody. Jednak w rozważanej sytuacji wiemy, iż $\sigma = 1$, a $X'X = I$, stąd statystyka testowa to $T_i = \frac{\hat{\beta_i}}{1} = \hat{\beta_i}$ i przy hipotezie $H_0$ ma ona rozkład normalny $N(0, 1)$. Stąd też szukane p-wartości obliczane są wzorem: $p_i = 2 \cdot \left( 1 - \Phi \left( |\hat{\beta_i}| \right) \right)$.
+
+
+
+```{r 6, echo = FALSE}
+
+Bonf <- function(p_wartosci, n=1000) {
+  result <- (p_wartosci < 0.05 / n)
+  return(result)
+}
+
+```
+
+
+
+**Procedura Benjaminiego-Hochberga:**
+
+
+Z kolei w **procedurze Benjaminiego-Hochberga** należy na początku posortować p-wartości w kolejności rosnącej: $p_{(1)} \leq...\leq p_{(n)}$, gdzie $H_{(1)},...,H_{(n)}$ są odpowiadającymi im hipotezami. Następnie, niech $i_0$ oznacza największy indeks taki, że $p_{(i)} \leq \frac{i}{n} \alpha$. Wówczas, procedura ta mówi o tym, że odrzucamy hipotezy $H_{(1)},...,H_{(i_0)}$. Napiszę zatem funkcję, która dla podanych p-wartości (wyliczonych w taki sam sposób jak dla poprzedniej metody) zwraca informację o tym, które zmienne są istotne na podstawie rozważanej procedury. 
+
+
+
+```{r 7, echo = FALSE}
+
+BH <- function(p_wartosci, n=1000) {
+  pvals <- sort(p_wartosci, index = TRUE)
+  BH <- (pvals$x <= 0.05 * seq(1:n)/n)
+  ind_odrzucane <- integer(0)
+  ind_przyjete <- integer(0)
+  if (sum(BH) > 0){
+    i0 <- max(which(BH))
+    ind_odrzucane <-pvals$ix[1:i0]
+    ind_przyjete <- pvals$ix[i0+1:n]
+  }
+  result <- rep(FALSE, n)
+  result[ind_odrzucane] <- TRUE
+  return(result)
+}
+
+```
+
+
+
+
+**Klasyfikator Bayesowski przy założeniu tej samej funkcji straty za błąd pierwszego i drugiego rodzaju:**
+
+
+**Funkcja straty C** polega na tym, iż:
+
+* nie ma straty, gdy podejmujemy prawdziwą decyzję,
+* ponosimy pewne koszty w przypadku błędnych decyzji: $C_0$ za błąd I rodzaju i $C_1$ za błąd drugiego rodzaju.
+
+
+Celem jest **minimalizacja ryzyka** - wartości oczekiwanej funkcji straty. **Klasyfikator Bayesowski** mówi o tym, że $\Gamma_1$, czyli obszar odrzucenia $H_0$, to: $\Gamma_1 = \{ x: \frac{f_1(x)}{f_0(x)} \geq \frac{C_0}{C_1} \frac{P(H_0)}{P(H_1)} \}$, gdzie $f_0$ i $f_1$ to funkcje gęstości prawdopodobieństwa, które opisują rozkład zmiennej losowej $x$ pod warunkiem, że rzeczywista hipoteza to, odpowiednio, $H_0$ lub $H_1$. W przypadku tego zadania $C_0 = C_1$. 
+
+
+
+
+Rozważamy zatem tutaj następujące hipotezy: $H_0: \beta_i = 0, H_1: \beta_i \neq 0$. Należy zauważyć, iż $\hat{\beta}^{MLE} = X' Y = X' (X\beta + \epsilon)$. Przy **prawdziwości hipotezy zerowej** $\beta_i = 0$, więc $\hat{\beta}^{MLE}_i = (X' \epsilon)_i \sim N(0, 1)$. Z kolei przy **prawdziwości hipotezy alternatywnej** $\beta_i \neq 0$, z czego wnioskujemy, że $\beta_i \sim N(0, \tau^2)$. W sytuacji tej $\hat{\beta}^{MLE}_i = \beta_i + (X' \epsilon)_i$, gdzie $\beta_i \sim N(0, \tau^2)$, a $(X' \epsilon)_i \sim N(0, 1)$. Wynika z tego (wykorzystując niezależność), iż wówczas $\hat{\beta}^{MLE}_i \sim N(0, \tau^2 + 1)$.
+
+
+Zauważamy, iż $P(H_0) = 1 - \gamma$ oraz $P(H_1) = \gamma$. Ponadto, wyliczamy: $$\frac{f_1(x)}{f_0(x)} = \frac{\frac{1}{\sqrt{2 \pi (\tau^2 + 1)}} e^{\frac{-x^2}{2 (\tau^2 + 1)}}}{\frac{1}{\sqrt{2\pi}} e^{\frac{-x^2}{2}}} = \frac{1}{\sqrt{\tau^2+1}} e^{\frac{(x\tau)^2}{2 (\tau^2+1)}},$$ a następnie sprawdzamy, które $x$ należą do obszaru odrzucenia $H_0$: $$\frac{1}{\sqrt{\tau^2+1}} e^{\frac{(x\tau)^2}{2 (\tau^2+1)}} \geq \frac{1-\gamma}{\gamma}.$$ W rezultacie przeprowadzonych obliczeń dostajemy następujący warunek: $$x^2 \geq \log(\sqrt{\tau^2+1}\cdot\frac{1-\gamma}{\gamma})\cdot \frac{2(\tau^2+1)}{\tau^2}.$$ Na tej podstawie napiszę funkcję, która dla podanych wartości $\gamma$ i $\tau$ wskazuje istotne zmienne wykorzystując wyznaczony warunek.
+
+
+```{r 8, echo = FALSE}
+
+Bayes <- function(x, gamma, tau) {
+  t <- log(sqrt(tau^2 + 1) * (1 - gamma)/gamma) * 2 * (tau^2 + 1)/tau^2
+  return(x^2 >= t)
+}
+
+```
+
+
+**Porównanie wyników:**
+
+
+Przedstawię teraz tabelę ukazującą **liczbę istotnych zmiennych** uzyskanych przy wykorzystaniu wyżej omówionych procedur w sześciu rozważanych sytuacjach (dla różnych kombinacji $\gamma$ i $\tau$).
+
+
+```{r 9, echo = FALSE}
+
+liczba_istotnych_zmiennych_table <- readRDS("liczba_istotnych_zmiennych_table.rds")
+colnames(liczba_istotnych_zmiennych_table) <- c("gamma", "tau", "Bonferroni", "BH",
+                                                "k. Bayesowski")
+
+knitr::kable(liczba_istotnych_zmiennych_table, caption = "Liczba istotnych zmiennych")
+
+```
+
+
+
+Na podstawie przedstawionej tabeli możemy wyciągnąć wniosek, iż **zwiększanie $\gamma$ prowadzi do wzrostu liczby istotnych zmiennych** w każdej z procedur. Dzieje się tak, gdyż $\gamma$ reprezentuje wagę, jaką przypisujemy rozkładowi normalnemu w procesie generowania wektora współczynników regresji $\beta$. Im wyższa wartość $\gamma$, tym większa szansa, że współczynniki $\beta_i$ będą różne od zera, co powoduje wykrycie większej liczby zmiennych jako istotne. Podobnie, **zwiększanie $\tau$ powoduje wzrost liczby istotnych zmiennych**, choć efekt ten jest zauważalny przy mniejszych wartościach $\gamma$. Jest tak dlatego, że wartość $\tau$ wpływa na zmienność współczynników $\beta$ - większa wartość powoduje większą zmienność współczynników, co z kolei prowadzi do wykrywania większej liczby zmiennych jako istotnych. 
+
+
+Ponadto, możemy zauważyć, że **procedura Bonferroniego** generuje najmniejszą liczbę zmiennych uznanych za istotne. Jest ona jedną z bardziej restrykcyjnych procedur, która stosuje bardzo surowe kryteria odrzucenia hipotez zerowych. Natomiast dwie pozostałe metody - **procedura Benjaminiego-Hochberga** i **klasyfikator Bayesowski** - wykrywają więcej zmiennych jako istotne, a ich wyniki są bardzo do siebie zbliżone. Jest tak dlatego, że procedury te są mniej restrykcyjne.
+
+
+## ESTYMATORY "UCIĘTE"
+
+
+W tej części raportu, dla każdej wyżej omówionej procedury, należy wyznaczyć **"ucięte" estymatory** wektora $\beta$, które konstruuje się w następujący sposób: $$\hat{\beta}^{uc}_i =
+\begin{cases} 
+\hat{\beta}^{LS}_i, & \text{jeżeli odrzucono } H_{0i}: \beta_i = 0; \\
+0, & \text{w przeciwnym wypadku}.
+\end{cases}.$$ Zatem, tam, gdzie zgodnie z procedurą wielokrotnego testowania $\beta_i \neq 0$, estymujemy $\beta_i$ za pomocą estymatora największej wiarogodności, a tam, gdzie zgodnie z tą procedurą $\beta_i = 0$, estymujemy $\beta_i$ za pomocą 0.
+
+
+Owe estymatory będę wyznaczać, modyfikując wektor $\hat{\beta}_{MLE}$ w taki sposób, by miał on zera w miejscach odpowiadających zmiennym, które poszczególna procedura uznała za nieistotne.
+
+
+
+```{r 10, echo = FALSE}
+
+SE_error <- function(beta_hat, beta_true) {
+  return(sum((beta_hat - beta_true)^2))
+}
+
+
+bledy <- function(beta_true, test){
+  H0 <- (beta_true==0)
+  b1 <- sum(H0 == TRUE & test == TRUE) 
+  b2 <- sum(H0 == FALSE & test == FALSE) 
+  
+  return(b1+b2)
+}
+
+
+eksperyment <- lapply(modele, function(model) {
+  
+  beta_mle <- beta_mle(X, model$Y)
+  JS_do_zera <- JS_do_zera(beta_mle)
+  JS_do_sredniej <- JS_do_sredniej(beta_mle)
+  
+  p_wartosci <- 2 * (1 - pnorm(abs(beta_mle)))
+  
+  Bonf_istotne <- Bonf(p_wartosci)
+  BH_istotne <- BH(p_wartosci)
+  Bayes_istotne <- Bayes(beta_mle, model$gamma, model$tau)
+  
+  uciete_Bonf <- beta_mle
+  uciete_Bonf[!Bonf_istotne] <- 0
+  uciete_BH <- beta_mle
+  uciete_BH[!BH_istotne] <- 0
+  uciete_Bayes <- beta_mle
+  uciete_Bayes[!Bayes_istotne] <- 0
+  
+  SE_mle <- SE_error(beta_mle, model$beta)
+  SE_JS_do_zera <- SE_error(JS_do_zera, model$beta)
+  SE_JS_do_sredniej <- SE_error(JS_do_sredniej, model$beta)
+  SE_Bonf <- SE_error(uciete_Bonf, model$beta)
+  SE_BH <- SE_error(uciete_BH, model$beta)
+  SE_Bayes <- SE_error(uciete_Bayes, model$beta)
+  
+  bledy_Bonf <- bledy(model$beta, Bonf_istotne)
+  bledy_BH <- bledy(model$beta, BH_istotne)
+  bledy_Bayes <- bledy(model$beta, Bayes_istotne)
+  
+  
+  return(list(gamma = model$gamma, tau = model$tau, Bonf_istotne = Bonf_istotne, 
+              BH_istotne = BH_istotne, Bayes_istotne = Bayes_istotne,
+              SE_mle = SE_mle, SE_JS_do_zera = SE_JS_do_zera, 
+              SE_JS_do_sredniej = SE_JS_do_sredniej, SE_Bonf = SE_Bonf, 
+              SE_BH = SE_BH, SE_Bayes = SE_Bayes,
+              bledy_Bonf = bledy_Bonf, bledy_BH = bledy_BH, bledy_Bayes = bledy_Bayes))
+  
+})
+
+
+```
+
+
+
+## PORÓWNANIE ESTYMATORÓW POD KĄTEM BŁĘDU KWADRATOWEGO
+
+
+W tej części porównamy wszystkie sześć omówionych estymatorów pod kątem **błędu kwadratowego** w sześciu rozważanych sytuacjach (dla różnych kombinacji $\gamma$ i $\tau$).
+
+
+**Błąd kwadratowy** to suma kwadratów różnic między oszacowanymi wartościami $\hat{\beta}$ a rzeczywistymi wartościami $\beta$. Mierzy on błąd dla jednej realizacji eksperymentu i wylicza się go następującym wzorem: $$SE = ||\hat{\beta} - \beta||^2.$$
+
+
+Przedstawię teraz zatem tabelę uzyskanych wyników w rozważanej sytuacjii.
+
+
+
+
+```{r 11, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(data.table)
+
+SE_table <- rbindlist(lapply(eksperyment, function(res) {
+  data.table(
+    gamma = res$gamma,
+    tau = res$tau,
+    SE_MLE = res$SE_mle,
+    SE_JS_do_zera = res$SE_JS_do_zera,
+    SE_JS_do_sredniej = res$SE_JS_do_sredniej,
+    SE_Bonf = res$SE_Bonf,
+    SE_BH = res$SE_BH,
+    SE_Bayes = res$SE_Bayes
+  )
+}))
+
+colnames(SE_table) <- c("gamma", "tau", "est. LS", "est. JS śc. do zera",
+                        "est. JS śc. do średniej", "est. ucięty (Bonf)",
+                        "est. ucięty (BH)", "est. ucięty (Bayes)")
+
+
+knitr::kable(round(SE_table, 3), caption = "Porównanie błędu kwadratowego")
+
+```
+
+
+
+
+Analizując ową tabelę, należy pamiętać, iż są to wyniki jedynie dla pojedynczego doświadczenia, więc losowość odgrywa tutaj dużą rolę. Widzimy jednak, że **estymator najmniejszych kwadratów** osiąga jedne z najwyższych błędów kwadratowych. Jest tak dlatego, że nie stosuje on żadnej formy regularizacji, a ponieważ niektóre współczynniki $\beta$ są zerowe, dopasowuje on szum, co prowadzi do dużego błędu. Widzimy również, że **estymatory Jamesa-Steina** działają dużo lepiej - znacząco zmniejszają błąd kwadratowy. Zmniejszają one błąd kwadratowy, wprowadzając pewne obciążenie i redukując wariancję. Następnie, możemy zauważyć, iż **estymatory "ucięte"** w wielu rozważanych sytuacjach mają najmniejszy błąd kwadratowy. Działają one lepiej, gdyż usuwają zbędny szum, zamiast tylko go redukować. Ponadto, użycie korekty Bonferroniego powoduje wyższy błąd kwadratowy, gdyż procedura ta nadmiernie "ucina" zmienne - przesadnie upraszcza model, ignorując część istotnych zmiennych. Dokładniejsze wnioski będzie można wyciągnąć w dalszej części raportu, przy powtórzeniu owego doświadczenia $1000$ razy.
+
+
+
+## PORÓWNANIE PROCEDUR TESTOWANIA POD KĄTEM SUMY LICZBY BŁĘDÓW
+
+
+W tej części należy porównać omawiane procedury testowania pod kątem **sumy błędów pierwszego i drugiego rodzaju**. **Błąd pierwszego rodzaju** to błąd polegający na odrzuceniu hipotezy zerowej w sytuacji, gdy jest ona prawdziwa. Z kolei **błąd drugiego rodzaju** to błąd polegający na przyjęciu hipotezy zerowej w sytuacji, gdy hipoteza alternatywna jest prawdziwa. Obliczę zatem sumę tych błędów w rozważanych sześciu sytuacjach i przedstawię wyniki w tabeli.
+
+
+
+
+```{r 12, echo = FALSE, message = FALSE, warning = FALSE}
+
+bledy_table <- rbindlist(lapply(eksperyment, function(res) {
+  data.table(
+    gamma = res$gamma,
+    tau = res$tau,
+    bledy_Bonf = res$bledy_Bonf,
+    bledy_BH = res$bledy_BH,
+    bledy_Bayes = res$bledy_Bayes
+  )
+}))
+
+
+colnames(bledy_table) <- c("gamma", "tau", "Bonferroni", "BH",
+                                                "k. Bayesowski")
+
+knitr::kable(round(bledy_table, 3), caption = "Porównanie sumy błędów")
+
+```
+
+
+
+
+Ponownie należy pamiętać, iż są to jedynie wyniki uzyskane w pojedynczym doświadczeniu. Widzimy jednak, że **procedura Bonferroniego** w prawie każdej sytuacji ma najwyższą sumę błędów. Metoda ta stosuje mocne poprawki na wielokrotne testowanie, więc odrzuca mniej hipotez, z czego wynika jej duża liczba błędów drugiego rodzaju. Możemy także zauważyć, iż **klasyfikator Bayesowski** osiąga najmniejsze sumy błędów, co może wynikać z tego, że korzysta on z dodatkowej wiedzy o rozkładzie $\beta$. Bardzo podobne, niskie wyniki uzyskała też **procedura Benjaminiego-Hochberga** - jest ona mniej restrykcyjna niż procedura Bonferroniego i dopuszcza więcej istotnych zmiennych, dzięki czemu lepiej równoważy ona liczbę błędów pierwszego i drugiego rodzaju. Widzimy również, że im większa wartość $\gamma$, tym większa liczba popełnionych błędów, gdyż wówczas występuje więcej niezerowych współczynników $\beta_i$. Z kolei im większa wartość $\tau$, tym mniejsza liczba błędów, gdyż wówczas łatwiej odróżnić niezerowe $\beta_i$ od szumu, więc procedury mają mniej błędów.
+
+
+
+# POWTÓRZENIE DOŚWIADCZENIA 1000 RAZY
+
+
+W tej części raportu przeprowadzone doświadczenie zostanie powtórzone **1000 razy** dla każdej kombinacji $\gamma$ i $\tau$. Wygeneruję zatem 1000 razy dane analogicznie jak w pierwszej części raportu, a następnie napiszę funkcję, która wyznacza dla nich wszystkie estymatory i stosuje rozważane procedury tak, jak poprzednio. 
+
+
+
+## PORÓWNANIE ESTYMATORÓW POD KĄTEM BŁĘDU ŚREDNIOKWADRATOWEGO
+
+
+**Błąd średniokwadratowy**, czyli **MSE**, to wartość oczekiwana omawianego wcześniej błędu kwadratowego: $$MSE = E(SE).$$ Obliczę go jako średnią uzyskanych błędów kwadratowych dla każdej kombinacji $\gamma$ i $\tau$ ze wszystkich wykonanych powtórzeń. Przedstawię teraz tabelę z uzyskanymi wynikami.
+
+
+
+```{r 13, echo = FALSE, message = FALSE, warning = FALSE}
+
+eksperyment_1000 <- readRDS("eksperyment_1000.rds")
+eksperyment_1000_unl = unlist(eksperyment_1000, F, F)
+
+
+results_mse <- lapply(eksperyment_1000_unl, function(x) {
+  return(list(gamma = x$gamma, tau = x$tau, SE_mle = x$SE_mle, SE_JS_do_zera = x$SE_JS_do_zera, 
+              SE_JS_do_sredniej = x$SE_JS_do_sredniej, SE_Bonf = x$SE_Bonf, 
+              SE_BH = x$SE_BH, SE_Bayes = x$SE_Bayes))
+})
+
+results_mse_table <- data.table::rbindlist(results_mse)
+
+results_mse_table <- results_mse_table[, .(MSE_mle = mean(SE_mle),
+                                           MSE_JS_do_zera = mean(SE_JS_do_zera),
+                                           MSE_JS_do_sredniej = mean(SE_JS_do_sredniej),
+                                           MSE_Bonf = mean(SE_Bonf),
+                                           MSE_BH = mean(SE_BH),
+                                           MSE_Bayes = mean(SE_Bayes)),
+                                            by = c("gamma", "tau")]
+
+colnames(results_mse_table) <- c("gamma", "tau", "est. LS", "est. JS śc. do zera",
+                        "est. JS śc. do średniej", "est. ucięty (Bonf)",
+                        "est. ucięty (BH)", "est. ucięty (Bayes)")
+
+knitr::kable(round(results_mse_table, 3), caption = "Porównanie błędu średniokwadratowego")
+
+```
+
+
+
+Widzimy, iż **estymator najmniejszych kwadratów** osiąga najwyższy błąd średniokwadratowy we wszystkich przypadkach. Dzieje się tak, gdyż w sytuacjach, gdy wiele współczynników jest równe zeru, nie wykorzystuje on tej informacji - nie zawiera żadnych mechanizmów regularizacji. Następnie, widzimy, iż **oba estymatory Jamesa-Steina** mają zbliżone do siebie, znacznie niższe błędy średniokwadratowe. Stosują one kurczenie współczynników w kierunku zera lub wspólnej średniej, co pomaga zmniejszyć wariancję estymatora. W modelach, gdzie wiele współczynników jest równe zero, estymatory Jamesa-Steina lepiej radzą sobie z identyfikacją i kurczeniem tych współczynników. Znamy również twierdzenie, że dla $n \geq 3$ (w tym przypadku $n = 1000$) owe estymatory są zawsze lepsze pod względem błędu średniokwadratowego od estymatora największej wiarogodności, co potwierdza wyciągnięte wnioski. Ponadto, zauważamy, że **estymatory "ucięte"** jeszcze bardziej obniżają błąd średniokwadratowy, jednak różnią się między sobą skutecznością. **Procedura Bonferroniego** jest najbardziej restrykcyjna i odrzuca najmniej hipotez zerowych, co skutkuje większą liczbą błędów drugiego rodzaju i wyższym $MSE$. **Procedura Benjaminiego-Hochberga** ma niższy błąd średniokwadratowy niż poprzednia metoda, gdyż odrzuca ona więcej hipotez zerowych i pozwala na wykrycie większej liczby niezerowych współczynników. Z kolei **estymator Bayesowski** ma najniższe $MSE$, co wynika z optymalnego balansu między błędami pierwszego i drugiego rodzaju. Warto także zauważyć, iż **większe wartości $\gamma$** powodują większą wartość $MSE$, gdyż wówczas więcej współczynników $\beta_i$ jest niezerowych, co utrudnia poprawne estymowanie. Ponadto, gdy **wartość $\tau$ rośnie**, to błąd średniokwadratowy dla estymatora najmniejszych kwadratów i estymatorów Jamesa-Steina również rośnie, gdyż wtedy współczynniki $\beta_i$ są większe. Natomiast pozostałe trzy "ucięte" estymatory mają wówczas mniejsze $MSE$, gdyż procedury selekcji zmiennych mogą łatwiej wykryć istotne zmienne i usunąć tylko te, które rzeczywiście są bliskie $0$. 
+
+
+***
+**Oszacowanie teoretyczne:**
+
+
+Wiemy, iż dla **estymatora największej wiarogodności** błąd średniokwadratowy powinien wynosić $n \sigma^2$, czyli w naszym przypadku $1000 \cdot 1 = 1000$. Z kolei dla **estymatora Jamesa-Steina ściągającego do zera** owe $MSE$ powinno być równe $\frac{n \sigma^2 ||\beta||^2}{||\beta||^2 + \sigma^2n}$, a dla **estymatora Jamesa-Steina ściągającego do wspólnej średniej** liczba ta to: $n \sigma^2 - \frac{\sigma^4 (n-1)}{(var(\beta) + \sigma^2)}$. Wynika z tego, iż dla $n \geq 3$ esymatory Jamesa-Steina zawsze osiągają niższy błąd średniokwadratowy niż estymator największej wiarogodności. Obliczę teraz teoretyczne oszacowanie dla tych trzech estymatorów, wykorzystując wygenerowane wektory $\beta$, aby sprawdzić poprawność estymacji. Dla każdej kombinacji $\gamma$ i $\tau$ wyznaczę średnią uzyskanych teoretycznych oszacowań $MSE$ i przedstawię wyniki w tabeli.
+
+
+
+```{r 14, echo = FALSE}
+
+generate_data_1000 <- readRDS("generate_data_1000.rds")
+generate_data_1000_unl = unlist(generate_data_1000, F, F)
+
+teoretycznie <- lapply(generate_data_1000_unl, function(model, n=1000, sigma2=1) {
+  beta <- model$beta
+  gamma <- model$gamma
+  tau <- model$tau
+
+  MLE <- n * sigma2
+  JS_do_zera <- n * sigma2 * sum(beta^2) / (sum(beta^2) + sigma2 * n)
+  JS_do_sredniej <- n * sigma2 - ((sigma2^2 * (n - 1)) / (var(beta) + sigma2))
+  
+  return(list(gamma = gamma, tau = tau, MLE = MLE, JS_do_zera = JS_do_zera, JS_do_sredniej = JS_do_sredniej))
+})
+
+
+teoretycznie_table <- data.table::rbindlist(teoretycznie)
+teoretycznie_table <- teoretycznie_table[, .(MSE_mle = mean(MLE),
+                                           MSE_JS_do_zera = mean(JS_do_zera),
+                                           MSE_JS_do_sredniej = mean(JS_do_sredniej)),
+                                           by = c("gamma", "tau")]
+
+colnames(teoretycznie_table) <- c("gamma", "tau", "est. LS", "est. JS śc. do zera",
+                        "est. JS śc. do średniej")
+
+knitr::kable(round(teoretycznie_table, 3), caption = "Porównanie błędu średniokwadratowego - teoretycznie")
+
+```
+
+
+
+Porównując te wyniki z tabelą estymowanych wartości, widzimy, iż **są one bardzo zbliżone**, co potwierdza poprawność przeprowadzonych estymacji.
+
+
+***
+
+
+## PORÓWNANIE PROCEDUR TESTOWANIA POD KĄTEM WARTOŚCI OCZEKIWANEJ SUMY LICZBY BŁĘDÓW
+
+
+W tej części należy porównać analizowane procedury pod kątem **wartości oczekiwanej sumy liczby błędów pierwszego i drugiego rodzaju**. Wyliczę zatem sumę liczby błędów dla wszystkich wygenerowanych danych analogicznie jak w przypadku pojedynczego powtórzenia, a następnie dla poszczególnych kombinacji wartości $\gamma$ i $\tau$ obliczę średnią uzyskanych wyników i ukażę je w tabeli.
+
+
+
+```{r 15, echo = FALSE}
+
+results_bledy <- lapply(eksperyment_1000_unl, function(x) {
+  return(list(gamma = x$gamma, tau = x$tau, bledy_Bonf = x$bledy_Bonf, 
+              bledy_BH = x$bledy_BH, bledy_Bayes = x$bledy_Bayes))
+})
+
+results_bledy_table <- data.table::rbindlist(results_bledy)
+
+results_bledy_table <- results_bledy_table[, .(srednia_suma_bledow_Bonf = mean(bledy_Bonf),
+                                                   srednia_suma_bledow_BH = mean(bledy_BH),
+                                                   srednia_suma_bledow_Bayes = mean(bledy_Bayes)),
+                                       by = c("gamma", "tau")]
+colnames(results_bledy_table) <- c("gamma", "tau", "Bonferroni", "BH",
+                                                "k. Bayesowski")
+
+knitr::kable(round(results_bledy_table, 3), caption = "Porównanie wartości oczekiwanej sumy błędów")
+
+```
+
+
+Na przedstawionej tabeli widzimy, iż zastosowanie **korekty Bonferroniego** w praktycznie wszystkich przypadkach daje największą wartość oczekiwaną sumy liczby błędów. Jest tak dlatego, iż metoda ta zbyt surowo kontroluje błędy pierwszego rodzaju kosztem wielu błędów drugiego rodzaju. Dalej, **korekta Benjaminiego-Hochberga** osiąga niższe średnie wartości sumy liczby popełnionych błędów, gdyż mniej surowo kontroluje ona błędy pierwszego rodzaju, w związku z czym jest bardziej zrównoważona. Natomiast dla **klasyfikatora Bayesowskiego** obserwujemy najniższe wyniki - optymalizuje on kompromis między błędami pierwszego i drugiego rodzaju. Uwzględnia on prawdopodobieństwa i minimalizuje błąd globalny. Warto również zauważyć, że **im większa wartość $\gamma$**, tym większe oczekiwane sumy liczby popełnionych błędów - występuje wówczas więcej istotnych współczynników $\beta$, więc trudniej poprawnie identyfikować zmienne. Z kolei wraz **ze wzrostem wartości $\tau$** omawiane wyniki maleją - wtedy wartości niezerowych współczynników $\beta$ są bardziej wyraźne, co ułatwia ich wykrycie. 
+
+
+
+
+## PODSUMOWANIE
+
+Raport ten pozwolił porównać działanie sześciu estymatorów wektora współczynników $\beta$ w rozważanej sytuacji. Pokazał on, że **estymatory Jamesa-Steina** znacznie obniżają błąd średniokwadratowy w stosunku do estymatora największej wiarogodności. Także **estymatory "ucięte"** znacząco obniżają uzyskany błąd średniokwadratowy - są one asymptotycznie optymalne, jeżeli sprawdzone jest założenie rzadkości. Porównane zostały także procedury testowania - **procedura Bonferroniego** osiąga największe średnie liczby popełnionych błędów, a **klasyfikator Bayesowski** pod tym względem jest najbardziej optymalny.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
